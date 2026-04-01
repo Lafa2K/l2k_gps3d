@@ -2,15 +2,24 @@ local Config = {
     enabled = true,
     drawWhenOnFoot = true,
     sampleStep = 6.0,
-    maxDistance = 220.0,
-    arrowSpacing = 18.0,
+    maxDistance = 520.0,
+    ignoreJunctionNodes = false,
+    smoothJunctionTransitions = true,
+    junctionPaddingPoints = 1,
+    junctionCurveStrength = 0.55,
+    junctionCurveMaxHandle = 6.0,
+    arrowSpacing = 1.0,
     arrowLength = 1.5,
     arrowWidth = 0.8,
-    routeHeight = 0.12,
-    updateInterval = 250,
+    routeHeight = 0.22,
+    updateInterval = 2500,
     slotPriority = { 0, 1, 2 },
     routeColor = { r = 64, g = 200, b = 255, a = 180 },
     arrowColor = { r = 0, g = 255, b = 180, a = 220 },
+}
+
+local NodeFlags = {
+    JUNCTION = 128,
 }
 
 local state = {
@@ -32,6 +41,140 @@ local function vecNormalize2D(v)
     end
 
     return vector3(v.x / mag, v.y / mag, 0.0)
+end
+
+local function vecLength2D(v)
+    return (v.x * v.x) + (v.y * v.y)
+end
+
+local function cubicBezier(p0, p1, p2, p3, t)
+    local omt = 1.0 - t
+    local omt2 = omt * omt
+    local omt3 = omt2 * omt
+    local t2 = t * t
+    local t3 = t2 * t
+
+    return (p0 * omt3)
+        + (p1 * (3.0 * omt2 * t))
+        + (p2 * (3.0 * omt * t2))
+        + (p3 * t3)
+end
+
+local function clonePoint(point)
+    return {
+        pos = vector3(point.pos.x, point.pos.y, point.pos.z),
+        junction = point.junction,
+        junctionZone = point.junctionZone,
+    }
+end
+
+local function getDirection(points, fromIndex, toIndex, fallback)
+    if fromIndex < 1 or toIndex < 1 or fromIndex > #points or toIndex > #points then
+        return fallback or vector3(0.0, 0.0, 0.0)
+    end
+
+    local dir = vecNormalize2D(points[toIndex].pos - points[fromIndex].pos)
+    if vecLength2D(dir) < 0.0001 then
+        return fallback or vector3(0.0, 0.0, 0.0)
+    end
+
+    return dir
+end
+
+local function getNodeFlagsAtPosition(pos)
+    if type(GetVehicleNodeProperties) ~= 'function' then
+        return false, 0
+    end
+
+    local ok, _, flags = GetVehicleNodeProperties(pos.x, pos.y, pos.z)
+    if not ok then
+        return false, 0
+    end
+
+    return true, flags or 0
+end
+
+local function isJunctionPoint(pos)
+    if not Config.ignoreJunctionNodes and not Config.smoothJunctionTransitions then
+        return false
+    end
+
+    local ok, flags = getNodeFlagsAtPosition(pos)
+    if not ok then
+        return false
+    end
+
+    return (flags & NodeFlags.JUNCTION) ~= 0
+end
+
+local function markJunctionPadding(points)
+    if (not Config.ignoreJunctionNodes and not Config.smoothJunctionTransitions) or Config.junctionPaddingPoints <= 0 then
+        return
+    end
+
+    for i = 1, #points do
+        if points[i].junction then
+            local minIndex = math.max(1, i - Config.junctionPaddingPoints)
+            local maxIndex = math.min(#points, i + Config.junctionPaddingPoints)
+
+            for j = minIndex, maxIndex do
+                points[j].junctionZone = true
+            end
+        end
+    end
+end
+
+local function smoothJunctionTransitions(points)
+    if not Config.smoothJunctionTransitions or #points < 4 then
+        return points
+    end
+
+    -- Bridge contiguous junction samples instead of dropping them, which keeps the 3D route continuous.
+    local smoothed = {}
+    for i = 1, #points do
+        smoothed[i] = clonePoint(points[i])
+    end
+
+    local index = 1
+    while index <= #smoothed do
+        if not smoothed[index].junctionZone then
+            index = index + 1
+        else
+            local zoneStart = index
+            while index <= #smoothed and smoothed[index].junctionZone do
+                index = index + 1
+            end
+
+            local zoneEnd = index - 1
+            local preIndex = zoneStart - 1
+            local postIndex = zoneEnd + 1
+
+            if preIndex >= 1 and postIndex <= #smoothed then
+                local startPos = smoothed[preIndex].pos
+                local endPos = smoothed[postIndex].pos
+                local span = zoneEnd - zoneStart + 1
+                local chord = endPos - startPos
+                local chordLength = math.sqrt(vecLength2D(chord))
+
+                if chordLength > 0.01 then
+                    local entryFallback = vecNormalize2D(chord)
+                    local exitFallback = entryFallback
+                    local entryDir = getDirection(smoothed, math.max(1, preIndex - 1), preIndex, entryFallback)
+                    local exitDir = getDirection(smoothed, postIndex, math.min(#smoothed, postIndex + 1), exitFallback)
+                    local handle = math.min(chordLength * Config.junctionCurveStrength, Config.junctionCurveMaxHandle)
+                    local control1 = startPos + (entryDir * handle)
+                    local control2 = endPos - (exitDir * handle)
+
+                    for pointIndex = zoneStart, zoneEnd do
+                        local t = (pointIndex - zoneStart + 1) / (span + 1)
+                        smoothed[pointIndex].pos = cubicBezier(startPos, control1, control2, endPos, t)
+                    end
+                end
+            end
+        end
+    end
+
+    return smoothed
 end
 
 local function hasRenderableRoute()
@@ -66,14 +209,19 @@ local function sampleSlot(slotType)
             break
         end
 
-        pos = vector3(pos.x, pos.y, pos.z + Config.routeHeight)
+        local basePos = vector3(pos.x, pos.y, pos.z)
+        local point = {
+            pos = vector3(basePos.x, basePos.y, basePos.z + Config.routeHeight),
+            junction = isJunctionPoint(basePos),
+            junctionZone = false,
+        }
 
         if #points == 0 then
-            points[#points + 1] = pos
+            points[#points + 1] = point
         else
-            local delta = pos - points[#points]
+            local delta = point.pos - points[#points].pos
             if vecLength2(delta) > 0.25 then
-                points[#points + 1] = pos
+                points[#points + 1] = point
             end
         end
 
@@ -83,6 +231,9 @@ local function sampleSlot(slotType)
     if #points < 2 then
         return nil
     end
+
+    markJunctionPadding(points)
+    points = smoothJunctionTransitions(points)
 
     return points, targetLength
 end
@@ -135,12 +286,22 @@ local function drawRoute()
     for i = 1, #points - 1 do
         local a = points[i]
         local b = points[i + 1]
-        DrawLine(a.x, a.y, a.z, b.x, b.y, b.z, Config.routeColor.r, Config.routeColor.g, Config.routeColor.b, Config.routeColor.a)
+        if not Config.ignoreJunctionNodes or (not a.junctionZone and not b.junctionZone) then
+            local aPos = a.pos
+            local bPos = b.pos
+            DrawLine(aPos.x, aPos.y, aPos.z, bPos.x, bPos.y, bPos.z, Config.routeColor.r, Config.routeColor.g, Config.routeColor.b, Config.routeColor.a)
+        end
     end
 
     local spacingCount = math.max(1, math.floor(Config.arrowSpacing / Config.sampleStep))
     for i = 2, #points - 1, spacingCount do
-        drawArrow(points[i - 1], points[i], points[i + 1])
+        local prevPoint = points[i - 1]
+        local currPoint = points[i]
+        local nextPoint = points[i + 1]
+
+        if not Config.ignoreJunctionNodes or (not prevPoint.junctionZone and not currPoint.junctionZone and not nextPoint.junctionZone) then
+            drawArrow(prevPoint.pos, currPoint.pos, nextPoint.pos)
+        end
     end
 end
 
