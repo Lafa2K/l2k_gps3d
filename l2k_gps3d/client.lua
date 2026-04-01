@@ -16,6 +16,14 @@ local Config = {
     slotPriority = { 0, 1, 2 },
     routeColor = { r = 64, g = 200, b = 255, a = 180 },
     arrowColor = { r = 0, g = 255, b = 180, a = 220 },
+    destinationMarkerEnabled = true,
+    destinationMarkerType = 2, -- MarkerTypeThickChevronUp
+    destinationMarkerLift = 2.0,
+    destinationMarkerGroundProbeZ = 1000.0,
+    destinationMarkerGroundOffset = 0.15,
+    destinationMarkerScale = { x = 3.0, y = 3.0, z = 2.9 },
+    destinationMarkerColor = { r = 0, g = 255, b = 180, a = 190 },
+    destinationChangeThreshold = 1.0,
 }
 
 local NodeFlags = {
@@ -28,6 +36,8 @@ local state = {
     activeSlot = nil,
     lastUpdate = 0,
     routeLength = 0.0,
+    destinationPos = nil,
+    destinationMarkerPos = nil,
 }
 
 local function vecLength2(v)
@@ -45,6 +55,15 @@ end
 
 local function vecLength2D(v)
     return (v.x * v.x) + (v.y * v.y)
+end
+
+local function positionsClose2D(a, b, threshold)
+    if a == nil or b == nil then
+        return a == b
+    end
+
+    local maxDist = threshold or 0.0
+    return vecLength2D(a - b) <= (maxDist * maxDist)
 end
 
 local function cubicBezier(p0, p1, p2, p3, t)
@@ -92,6 +111,71 @@ local function getNodeFlagsAtPosition(pos)
     end
 
     return true, flags or 0
+end
+
+local function getWaypointDestination()
+    if type(GetFirstBlipInfoId) ~= 'function'
+        or type(DoesBlipExist) ~= 'function'
+        or type(GetBlipInfoIdCoord) ~= 'function' then
+        return nil
+    end
+
+    local blip = GetFirstBlipInfoId(8)
+    if not blip or blip == 0 or not DoesBlipExist(blip) then
+        return nil
+    end
+
+    local coords = GetBlipInfoIdCoord(blip)
+    if not coords then
+        return nil
+    end
+
+    return vector3(coords.x, coords.y, coords.z)
+end
+
+local function resolveDestinationMarkerPos(destinationPos, fallbackPos)
+    if not destinationPos then
+        if not fallbackPos then
+            return nil
+        end
+
+        return vector3(fallbackPos.x, fallbackPos.y, fallbackPos.z + Config.destinationMarkerLift)
+    end
+
+    local markerZ = destinationPos.z
+    if type(GetGroundZFor_3dCoord) == 'function' then
+        local foundGround, groundZ = GetGroundZFor_3dCoord(
+            destinationPos.x,
+            destinationPos.y,
+            Config.destinationMarkerGroundProbeZ,
+            false
+        )
+
+        if foundGround then
+            markerZ = groundZ + Config.destinationMarkerGroundOffset
+        end
+    end
+
+    if fallbackPos and markerZ <= 0.01 then
+        markerZ = fallbackPos.z - Config.routeHeight
+    end
+
+    return vector3(destinationPos.x, destinationPos.y, markerZ + Config.destinationMarkerLift)
+end
+
+local function updateDestinationMarker(points)
+    local fallbackPos = nil
+    if points and #points > 0 then
+        fallbackPos = points[#points].pos
+    end
+
+    state.destinationPos = getWaypointDestination()
+    state.destinationMarkerPos = resolveDestinationMarkerPos(state.destinationPos, fallbackPos)
+end
+
+local function didDestinationChange()
+    local currentDestination = getWaypointDestination()
+    return not positionsClose2D(currentDestination, state.destinationPos, Config.destinationChangeThreshold)
 end
 
 local function isJunctionPoint(pos)
@@ -242,12 +326,15 @@ local function rebuildRoute()
     state.points = {}
     state.activeSlot = nil
     state.routeLength = 0.0
+    state.destinationMarkerPos = nil
 
     if not state.enabled then
+        state.destinationPos = nil
         return
     end
 
     if not hasRenderableRoute() then
+        updateDestinationMarker(nil)
         return
     end
 
@@ -257,9 +344,12 @@ local function rebuildRoute()
             state.points = points
             state.activeSlot = slotType
             state.routeLength = routeLength
+            updateDestinationMarker(points)
             return
         end
     end
+
+    updateDestinationMarker(nil)
 end
 
 local function drawArrow(prevPos, pos, nextPos)
@@ -305,6 +395,32 @@ local function drawRoute()
     end
 end
 
+local function drawDestinationMarker()
+    if not Config.destinationMarkerEnabled or not state.destinationMarkerPos then
+        return
+    end
+
+    local pos = state.destinationMarkerPos
+    local scale = Config.destinationMarkerScale
+    local color = Config.destinationMarkerColor
+
+    DrawMarker(
+        Config.destinationMarkerType,
+        pos.x, pos.y, pos.z+1,
+        0.0, 0.0, 0.0,
+        180.0, 0.0, 0.0,
+        scale.x, scale.y, scale.z,
+        color.r, color.g, color.b, color.a,
+        false,
+        false,
+        2,
+        false,
+        nil,
+        nil,
+        false
+    )
+end
+
 CreateThread(function()
     while true do
         local waitTime = 500
@@ -314,6 +430,7 @@ CreateThread(function()
             if Config.drawWhenOnFoot or IsPedInAnyVehicle(ped, false) then
                 waitTime = 0
                 drawRoute()
+                drawDestinationMarker()
             end
         end
 
@@ -325,7 +442,10 @@ CreateThread(function()
     while true do
         if state.enabled then
             local now = GetGameTimer()
-            if now - state.lastUpdate >= Config.updateInterval then
+            if didDestinationChange() then
+                state.lastUpdate = now
+                rebuildRoute()
+            elseif now - state.lastUpdate >= Config.updateInterval then
                 state.lastUpdate = now
                 rebuildRoute()
             end
@@ -333,6 +453,8 @@ CreateThread(function()
             state.points = {}
             state.activeSlot = nil
             state.routeLength = 0.0
+            state.destinationPos = nil
+            state.destinationMarkerPos = nil
         end
 
         Wait(100)
