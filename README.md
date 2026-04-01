@@ -1,7 +1,7 @@
 # l2k_gps3d (WIP) - Teste inicial = ok. 
 
 Protótipo de GPS 3D para FiveM.
-[Clica aqui para ver a demonstração do vídeo](https://streamable.com/4hz0dx)
+[Clica aqui para ver a demonstração do vídeo](https://youtu.be/uJbZZwEVIng)
 O resource:
 - lê a rota ativa do jogo
 - amostra posições ao longo do GPS usando `GET_POS_ALONG_GPS_TYPE_ROUTE`
