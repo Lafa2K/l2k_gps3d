@@ -1,4 +1,4 @@
-# l2k_gps3d
+# l2k_gps3d (WIP) - Teste inicial = ok. 
 
 Protótipo de GPS 3D para FiveM.
 [Clica aqui para ver a demonstração do vídeo](https://streamable.com/4hz0dx)
