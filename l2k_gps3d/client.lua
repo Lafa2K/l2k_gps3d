@@ -14,8 +14,20 @@ local Config = {
     routeHeight = 0.22,
     updateInterval = 2500,
     slotPriority = { 0, 1, 2 },
+    routeRenderType = 2, -- 1 = lines, 2 = rect + uvmap
     routeColor = { r = 64, g = 200, b = 255, a = 180 },
     arrowColor = { r = 0, g = 255, b = 180, a = 220 },
+    texturedRoute = {
+        enabled = true,
+        textureDict = 'chevrons',
+        textureName = 'chevrons',
+        width = 1.35,
+        lift = 0.03,
+        repeatDistance = 4.0,
+        color = { r = 255, g = 255, b = 255, a = 205 },
+        drawArrowOverlay = false,
+        disableBackfaceCulling = true,
+    },
     destinationMarkerEnabled = true,
     destinationMarkerType = 2, -- MarkerTypeThickChevronUp
     destinationMarkerLift = 2.0,
@@ -38,7 +50,89 @@ local state = {
     routeLength = 0.0,
     destinationPos = nil,
     destinationMarkerPos = nil,
+    texturedRouteReady = false,
+    routeRenderType = Config.routeRenderType,
 }
+
+local function clampColorChannel(value, fallback)
+    local numeric = tonumber(value)
+    if numeric == nil then
+        return fallback
+    end
+
+    return math.floor(math.max(0, math.min(255, numeric)))
+end
+
+local function getCurrentRouteTint()
+    local tint = Config.routeColor or {}
+    return {
+        r = clampColorChannel(tint.r, 255),
+        g = clampColorChannel(tint.g, 255),
+        b = clampColorChannel(tint.b, 255),
+        a = clampColorChannel(tint.a, 255),
+    }
+end
+
+local function setRouteTint(r, g, b, a)
+    local current = getCurrentRouteTint()
+    local tint = {
+        r = clampColorChannel(r, current.r),
+        g = clampColorChannel(g, current.g),
+        b = clampColorChannel(b, current.b),
+        a = clampColorChannel(a, current.a),
+    }
+
+    Config.routeColor = {
+        r = tint.r,
+        g = tint.g,
+        b = tint.b,
+        a = tint.a,
+    }
+
+    Config.arrowColor = {
+        r = tint.r,
+        g = tint.g,
+        b = tint.b,
+        a = tint.a,
+    }
+
+    Config.texturedRoute.color = {
+        r = tint.r,
+        g = tint.g,
+        b = tint.b,
+        a = tint.a,
+    }
+
+    return tint
+end
+
+local function parseRouteTintInput(args, rawCommand)
+    local values = {}
+
+    if type(rawCommand) == 'string' and rawCommand ~= '' then
+        local payload = rawCommand:gsub('^%S+%s*', '')
+        payload = payload:gsub('^rgba?%s*%(', '')
+        payload = payload:gsub('%)', ' ')
+
+        for token in payload:gmatch('[%+%-]?%d+%.?%d*') do
+            values[#values + 1] = tonumber(token)
+            if #values >= 4 then
+                break
+            end
+        end
+    end
+
+    if #values == 0 and type(args) == 'table' then
+        for i = 1, 4 do
+            local numeric = tonumber(args[i] or '')
+            if numeric ~= nil then
+                values[#values + 1] = numeric
+            end
+        end
+    end
+
+    return values[1], values[2], values[3], values[4]
+end
 
 local function vecLength2(v)
     return (v.x * v.x) + (v.y * v.y) + (v.z * v.z)
@@ -55,6 +149,15 @@ end
 
 local function vecLength2D(v)
     return (v.x * v.x) + (v.y * v.y)
+end
+
+local function vecDistance2D(a, b)
+    if not a or not b then
+        return 0.0
+    end
+
+    local delta = a - b
+    return math.sqrt((delta.x * delta.x) + (delta.y * delta.y))
 end
 
 local function positionsClose2D(a, b, threshold)
@@ -98,6 +201,32 @@ local function getDirection(points, fromIndex, toIndex, fallback)
     end
 
     return dir
+end
+
+local function ensureTexturedRouteReady()
+    if not Config.texturedRoute.enabled then
+        return false
+    end
+
+    if state.texturedRouteReady then
+        return true
+    end
+
+    local textureDict = Config.texturedRoute.textureDict
+    if type(textureDict) ~= 'string' or textureDict == '' then
+        return false
+    end
+
+    if type(RequestStreamedTextureDict) ~= 'function' or type(HasStreamedTextureDictLoaded) ~= 'function' then
+        return false
+    end
+
+    RequestStreamedTextureDict(textureDict, true)
+    if HasStreamedTextureDictLoaded(textureDict) then
+        state.texturedRouteReady = true
+    end
+
+    return state.texturedRouteReady
 end
 
 local function getNodeFlagsAtPosition(pos)
@@ -367,20 +496,151 @@ local function drawArrow(prevPos, pos, nextPos)
     DrawLine(right.x, right.y, right.z, tip.x, tip.y, tip.z, Config.arrowColor.r, Config.arrowColor.g, Config.arrowColor.b, Config.arrowColor.a)
 end
 
+local function getRibbonTangent(points, index)
+    if index < 1 or index > #points then
+        return vector3(0.0, 0.0, 0.0)
+    end
+
+    local tangent = vector3(0.0, 0.0, 0.0)
+
+    if index > 1 then
+        tangent = tangent + vecNormalize2D(points[index].pos - points[index - 1].pos)
+    end
+
+    if index < #points then
+        tangent = tangent + vecNormalize2D(points[index + 1].pos - points[index].pos)
+    end
+
+    if vecLength2D(tangent) < 0.0001 then
+        if index < #points then
+            tangent = vecNormalize2D(points[index + 1].pos - points[index].pos)
+        elseif index > 1 then
+            tangent = vecNormalize2D(points[index].pos - points[index - 1].pos)
+        end
+    else
+        tangent = vecNormalize2D(tangent)
+    end
+
+    return tangent
+end
+
+local function getRibbonVertices(points, index, width, lift)
+    local point = points[index]
+    if not point then
+        return nil, nil
+    end
+
+    local tangent = getRibbonTangent(points, index)
+    if vecLength2D(tangent) < 0.0001 then
+        return nil, nil
+    end
+
+    local halfWidth = width * 0.5
+    local side = vector3(-tangent.y, tangent.x, 0.0) * halfWidth
+    local basePos = point.pos + vector3(0.0, 0.0, lift or 0.0)
+
+    return basePos - side, basePos + side
+end
+
+local function drawRouteTexturedSegment(aLeft, aRight, bLeft, bRight, startV, endV)
+    local texture = Config.texturedRoute
+    local color = texture.color
+
+    DrawTexturedPoly(
+        aLeft.x, aLeft.y, aLeft.z,
+        bLeft.x, bLeft.y, bLeft.z,
+        bRight.x, bRight.y, bRight.z,
+        color.r, color.g, color.b, color.a,
+        texture.textureDict, texture.textureName,
+        0.0, startV, 1.0,
+        0.0, endV, 1.0,
+        1.0, endV, 1.0
+    )
+
+    DrawTexturedPoly(
+        aLeft.x, aLeft.y, aLeft.z,
+        bRight.x, bRight.y, bRight.z,
+        aRight.x, aRight.y, aRight.z,
+        color.r, color.g, color.b, color.a,
+        texture.textureDict, texture.textureName,
+        0.0, startV, 1.0,
+        1.0, endV, 1.0,
+        1.0, startV, 1.0
+    )
+end
+
+local function drawTexturedRoute(points)
+    if not Config.texturedRoute.enabled or #points < 2 then
+        return false
+    end
+
+    if type(DrawTexturedPoly) ~= 'function' or not ensureTexturedRouteReady() then
+        return false
+    end
+
+    local texture = Config.texturedRoute
+    local repeatDistance = math.max(texture.repeatDistance or 1.0, 0.01)
+    local accumulatedDistance = 0.0
+    local cullingChanged = false
+
+    if texture.disableBackfaceCulling and type(SetBackfaceculling) == 'function' then
+        SetBackfaceculling(false)
+        cullingChanged = true
+    end
+
+    for i = 1, #points - 1 do
+        local a = points[i]
+        local b = points[i + 1]
+        local segmentDistance = vecDistance2D(a.pos, b.pos)
+
+        if segmentDistance > 0.01 then
+            if not Config.ignoreJunctionNodes or (not a.junctionZone and not b.junctionZone) then
+                local aLeft, aRight = getRibbonVertices(points, i, texture.width, texture.lift)
+                local bLeft, bRight = getRibbonVertices(points, i + 1, texture.width, texture.lift)
+
+                if aLeft and aRight and bLeft and bRight then
+                    local startV = accumulatedDistance / repeatDistance
+                    local endV = (accumulatedDistance + segmentDistance) / repeatDistance
+                    drawRouteTexturedSegment(aLeft, aRight, bLeft, bRight, startV, endV)
+                end
+            end
+
+            accumulatedDistance = accumulatedDistance + segmentDistance
+        end
+    end
+
+    if cullingChanged and type(SetBackfaceculling) == 'function' then
+        SetBackfaceculling(true)
+    end
+
+    return true
+end
+
 local function drawRoute()
     local points = state.points
     if #points < 2 then
         return
     end
 
-    for i = 1, #points - 1 do
-        local a = points[i]
-        local b = points[i + 1]
-        if not Config.ignoreJunctionNodes or (not a.junctionZone and not b.junctionZone) then
-            local aPos = a.pos
-            local bPos = b.pos
-            DrawLine(aPos.x, aPos.y, aPos.z, bPos.x, bPos.y, bPos.z, Config.routeColor.r, Config.routeColor.g, Config.routeColor.b, Config.routeColor.a)
+    local drewTexturedRoute = false
+    if state.routeRenderType == 2 then
+        drewTexturedRoute = drawTexturedRoute(points)
+    end
+
+    if state.routeRenderType == 1 or not drewTexturedRoute then
+        for i = 1, #points - 1 do
+            local a = points[i]
+            local b = points[i + 1]
+            if not Config.ignoreJunctionNodes or (not a.junctionZone and not b.junctionZone) then
+                local aPos = a.pos
+                local bPos = b.pos
+                DrawLine(aPos.x, aPos.y, aPos.z, bPos.x, bPos.y, bPos.z, Config.routeColor.r, Config.routeColor.g, Config.routeColor.b, Config.routeColor.a)
+            end
         end
+    end
+
+    if state.routeRenderType == 2 and drewTexturedRoute and not Config.texturedRoute.drawArrowOverlay then
+        return
     end
 
     local spacingCount = math.max(1, math.floor(Config.arrowSpacing / Config.sampleStep))
@@ -471,7 +731,7 @@ RegisterCommand('gps3d', function()
         state.routeLength = 0.0
     end
 
-    local message = state.enabled and '^2GPS 3D ligado.^7' or '^1GPS 3D desligado.^7'
+    local message = state.enabled and '^2GPS 3D enabled.^7' or '^1GPS 3D disabled.^7'
     TriggerEvent('chat:addMessage', {
         color = { 255, 255, 255 },
         multiline = false,
@@ -490,13 +750,66 @@ RegisterCommand('gps3d_refresh', function()
     })
 end, false)
 
-CreateThread(function()
-    Wait(1000)
-    if type(GetPosAlongGpsTypeRoute) ~= 'function' then
-        print('[l2k_gps3d] Native GetPosAlongGpsTypeRoute nao encontrada neste runtime.')
+RegisterCommand('gps3dtype', function(_, args)
+    local requestedType = tonumber(args and args[1] or '')
+    if requestedType ~= 1 and requestedType ~= 2 then
+        local currentType = state.routeRenderType == 2 and '2 (Rect+Uvmap)' or '1 (Lines)'
+        TriggerEvent('chat:addMessage', {
+            color = { 255, 255, 255 },
+            multiline = false,
+            args = { 'l2k_gps3d', ('^3Usage:^7 /gps3dtype 1^7 or ^2/gps3dtype 2^7. Current: %s'):format(currentType) }
+        })
         return
     end
 
+    state.routeRenderType = requestedType
+    if requestedType == 2 then
+        ensureTexturedRouteReady()
+    end
+
+    local modeLabel = requestedType == 2 and '^2Rect+Uvmap^7' or '^5Lines^7'
+    TriggerEvent('chat:addMessage', {
+        color = { 255, 255, 255 },
+        multiline = false,
+        args = { 'l2k_gps3d', ('3D GPS mode changed to %s'):format(modeLabel) }
+    })
+end, false)
+
+RegisterCommand('gps3dcolor', function(_, args, rawCommand)
+    local currentTint = getCurrentRouteTint()
+    local r, g, b, a = parseRouteTintInput(args, rawCommand)
+
+    if r == nil or g == nil or b == nil then
+        TriggerEvent('chat:addMessage', {
+            color = { 255, 255, 255 },
+            multiline = false,
+            args = {
+                'l2k_gps3d',
+                ('^3Usage:^7 /gps3color r g b [a]^7 or ^3/gps3color r,g,b,a^7. Current: rgba(%d, %d, %d, %d)'):format(currentTint.r, currentTint.g, currentTint.b, currentTint.a)
+            }
+        })
+        return
+    end
+
+    local appliedTint = setRouteTint(r, g, b, a)
+    TriggerEvent('chat:addMessage', {
+        color = { 255, 255, 255 },
+        multiline = false,
+        args = {
+            'l2k_gps3d',
+            ('3D GPS color changed to rgba(%d, %d, %d, %d)'):format(appliedTint.r, appliedTint.g, appliedTint.b, appliedTint.a)
+        }
+    })
+end, false)
+
+CreateThread(function()
+    Wait(1000)
+    if type(GetPosAlongGpsTypeRoute) ~= 'function' then
+        print('[l2k_gps3d] Native GetPosAlongGpsTypeRoute was not found in this runtime.')
+        return
+    end
+
+    ensureTexturedRouteReady()
     rebuildRoute()
-    print('[l2k_gps3d] pronto. Use /gps3d para ligar/desligar e /gps3d_refresh para forcar um rebuild.')
+    print(('[l2k_gps3d] ready. Use /gps3d, /gps3d_refresh, /gps3dtype 1|2, and /gps3color r g b [a]. Current type: %s'):format(state.routeRenderType))
 end)
