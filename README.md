@@ -30,6 +30,8 @@ This resource:
 
 - `/gps3d` — toggles the 3D GPS on or off
 - `/gps3d_refresh` — forces a route rebuild
+- `/gps3dcolor r,g,b,a` — change color
+- `/gps3dtype 1 or 2` — change type - 1 = line, 2 = rect+uvmap (ytd - png)
 
 ### Notes
 
