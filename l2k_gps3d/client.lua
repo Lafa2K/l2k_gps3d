@@ -2,7 +2,7 @@ local Config = {
     enabled = true,
     drawWhenOnFoot = true,
     sampleStep = 6.0,
-    maxDistance = 520.0,
+    maxDistance = 150.0,
     ignoreJunctionNodes = false,
     smoothJunctionTransitions = true,
     junctionPaddingPoints = 1,
@@ -12,7 +12,7 @@ local Config = {
     arrowLength = 1.5,
     arrowWidth = 0.8,
     routeHeight = 0.22,
-    updateInterval = 2500,
+    updateInterval = 1500,
     slotPriority = { 0, 1, 2 },
     routeRenderType = 2, -- 1 = lines, 2 = rect + uvmap
     routeColor = { r = 64, g = 200, b = 255, a = 180 },
