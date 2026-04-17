@@ -7,4 +7,7 @@ author 'Lafa2K + Codex'
 description 'Prototype 3D GPS route renderer using GTA V route sampling natives.'
 version '0.1.0'
 
-client_script 'client.lua'
+client_scripts {
+    'client.lua',
+    'gps3ddebug.client.lua'
+}
