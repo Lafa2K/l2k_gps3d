@@ -32,6 +32,7 @@ This resource:
 - `/gps3d_refresh` — forces a route rebuild
 - `/gps3dcolor r,g,b,a` — change color
 - `/gps3dtype 1 or 2` — change type - 1 = line, 2 = rect+uvmap (ytd - png)
+- `/gps3ddebug` — Native Z/ground debug tool for testing clipping, underground points, and route height behavior.
 
 ### Notes
 
@@ -39,6 +40,14 @@ This resource:
 - The script uses the route already calculated by GTA/FiveM
 - It includes a first pass for junction filtering and curve continuity, although some turns may still show minor visual artifacts
 - If `GetPosAlongGpsTypeRoute` is unavailable in the current runtime, the script will warn in console
+
+## License
+This project is licensed under the MIT License.
+
+## Attribution
+If you use this resource as a base for your own project, please provide visible credit to the original project and author. It would be greatly appreciated.
+
+
 
 ---
 
@@ -70,6 +79,17 @@ Este resource:
 
 - `/gps3d` — liga ou desliga o GPS 3D
 - `/gps3d_refresh` — força a reconstrução da rota
+- `/gps3dcolor r,g,b,a` — change color
+- `/gps3dtype 1 or 2` — muda o tipo entre linha e rectuvmap
+- `/gps3ddebug` — Debug para consertar o problema de Z abaixo da pista. em teste
+- 
+## License
+This project is licensed under the MIT License.
+
+## Attribution
+Se você usar este resource como base para o seu próprio projeto, por favor dê os devidos créditos de forma visível ao projeto original e ao autor. Isso será muito apreciado.
+
+
 
 ### Observações
 
