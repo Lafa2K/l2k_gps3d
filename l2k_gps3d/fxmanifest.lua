@@ -4,10 +4,22 @@ game 'gta5'
 lua54 'yes'
 
 author 'Lafa2K + Codex'
-description 'Prototype 3D GPS route renderer using GTA V route sampling natives.'
-version '0.1.0'
+description '3D GPS ribbon renderer for user waypoint and mission blip routes.'
+version '1.2.0'
+
+shared_scripts {
+    'gpsgeoanim.config.lua'
+}
 
 client_scripts {
-    'client.lua',
-    'gps3ddebug.client.lua'
+    'gpsgeoanim.client.lua',
+    'client.lua'
 }
+
+files {
+    'data/signal-power-up_sounds.dat54.rel',
+    'audiodirectory/custom_sounds.awc'
+}
+
+data_file 'AUDIO_WAVEPACK'  'audiodirectory'
+data_file 'AUDIO_SOUNDDATA' 'data/signal-power-up_sounds.dat'
